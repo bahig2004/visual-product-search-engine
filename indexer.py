@@ -4,8 +4,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 import faiss
 import numpy as np
-from .exceptions import ConfigurationError, IndexNotBuiltError, IndexPersistenceError
-from .utils import (
+from exceptions import ConfigurationError, IndexNotBuiltError, IndexPersistenceError
+from utils import (
     ensure_parent_dir,
     get_logger,
     read_json,
