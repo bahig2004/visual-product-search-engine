@@ -1,0 +1,10 @@
+{
+  "dress": 0,
+  "shirt": 1,
+  "tshirt": 2,
+  "hoodie": 3,
+  "jacket": 4,
+  "skirt": 5,
+  "pants": 6,
+  "blouse": 7
+}

@@ -1,0 +1,48 @@
+Dataset Summary
+
+Source Dataset:
+DeepFashion (Category and Attribute Prediction subset)
+
+Project Domain:
+Clothes image retrieval
+
+Selected Project Categories:
+blouse
+dress
+hoodie
+jacket
+pants
+shirt
+skirt
+tshirt
+
+Final Clean Image Count by Category:
+blouse: 12179
+dress: 31825
+hoodie: 2140
+jacket: 5580
+pants: 22062
+shirt: 5327
+skirt: 7059
+tshirt: 18759
+
+Total Final Images:
+104931
+
+Generated Metadata Files:
+products.csv
+products_validated.csv
+final_products.csv
+category_counts.csv
+
+Generated Split Files:
+train.csv
+val.csv
+test.csv
+
+Notes:
+- Images were collected from DeepFashion.
+- Metadata was built from category and evaluation annotation files.
+- Image width and height were validated.
+- Images smaller than 224 x 224 were removed.
+- Final dataset is organized for image retrieval work.
