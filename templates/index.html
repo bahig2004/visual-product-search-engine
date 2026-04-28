@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Visual Product Search</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+  </head>
+  <body>
+    <main class="layout">
+      <header class="hero">
+        <div class="brand-badge">AI Visual Retrieval</div>
+        <h1>Visual Product Search Engine</h1>
+        <p class="subtitle">
+          Drag and drop a product image, or browse from your device, to find visually
+          similar items instantly.
+        </p>
+      </header>
+
+      <section class="panel search-panel">
+        <form id="searchForm" class="search-form">
+          <div
+            id="dropZone"
+            class="drop-zone"
+            role="button"
+            tabindex="0"
+            aria-label="Drop query image here or click to upload"
+          >
+            <input id="imageInput" name="image" type="file" accept="image/*" required />
+            <p class="drop-title">Drop image here</p>
+            <p class="drop-subtitle">or click to browse</p>
+          </div>
+
+          <div class="controls-row">
+            <label for="topKInput">Top K</label>
+            <input id="topKInput" name="top_k" type="number" value="5" min="1" max="30" />
+            <button id="searchBtn" type="submit">Search Similar Products</button>
+          </div>
+        </form>
+
+        <div id="queryPreviewBox" class="query-preview hidden">
+          <img id="queryPreviewImage" alt="Query preview" />
+          <div>
+            <p class="preview-title">Selected query image</p>
+            <p id="queryFileName" class="preview-name"></p>
+          </div>
+        </div>
+        <p id="statusText" class="status"></p>
+      </section>
+
+      <section class="panel">
+        <div class="results-header">
+          <h2>Results</h2>
+          <span id="resultsMeta" class="results-meta"></span>
+        </div>
+        <div id="resultsGrid" class="grid"></div>
+      </section>
+    </main>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+  </body>
+</html>

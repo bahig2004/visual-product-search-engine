@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-import tempfile
+import hashlib
+import os
+from collections import OrderedDict
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List
 
 import numpy as np
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, render_template, request, send_from_directory, url_for
 
 from exceptions import RetrievalError
 
@@ -34,6 +37,8 @@ class QueryFeatureExtractor:
 
         self._torch = torch
         self._image_module = Image
+        if torch.cuda.is_available():
+            torch.backends.cudnn.benchmark = True
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         model = resnet50(weights=ResNet50_Weights.DEFAULT)
         self.model = nn.Sequential(*list(model.children())[:-1]).to(self.device)
@@ -49,10 +54,17 @@ class QueryFeatureExtractor:
             ]
         )
 
+    def extract_bytes(self, image_bytes: bytes) -> np.ndarray:
+        img = self._image_module.open(BytesIO(image_bytes)).convert("RGB")
+        img_tensor = self.transform(img).unsqueeze(0).to(self.device)
+        with self._torch.inference_mode():
+            features = self.model(img_tensor).view(1, -1)
+        return features.cpu().numpy().astype(np.float32)
+
     def extract(self, image_path: Path) -> np.ndarray:
         img = self._image_module.open(image_path).convert("RGB")
         img_tensor = self.transform(img).unsqueeze(0).to(self.device)
-        with self._torch.no_grad():
+        with self._torch.inference_mode():
             features = self.model(img_tensor).view(1, -1)
         return features.cpu().numpy().astype(np.float32)
 
@@ -70,6 +82,8 @@ class SearchBackendService:
             config_path=str(CONFIG_PATH),
         )
         self.extractor = QueryFeatureExtractor()
+        self._result_cache: OrderedDict[str, List[Dict[str, Any]]] = OrderedDict()
+        self._result_cache_size = int(os.getenv("RESULT_CACHE_SIZE", "128"))
         self._ensure_index_ready()
 
     def _ensure_index_ready(self) -> None:
@@ -162,17 +176,24 @@ class SearchBackendService:
         return vectors, metadata
 
     def search_uploaded_image(self, image_file, top_k: int) -> List[Dict[str, Any]]:
-        suffix = Path(image_file.filename or "query.jpg").suffix or ".jpg"
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            tmp_path = Path(tmp.name)
-            image_file.save(tmp_path)
+        image_bytes = image_file.read()
+        if not image_bytes:
+            raise ValueError("Uploaded file is empty.")
+        # Reset stream position for compatibility if other middleware needs it.
+        image_file.seek(0)
 
-        try:
-            query_vector = self.extractor.extract(tmp_path)
-            return self.indexer.search(query_vector, top_k=top_k)
-        finally:
-            if tmp_path.exists():
-                tmp_path.unlink()
+        cache_key = f"{top_k}:{hashlib.sha1(image_bytes).hexdigest()}"
+        if cache_key in self._result_cache:
+            self._result_cache.move_to_end(cache_key)
+            return self._result_cache[cache_key]
+
+        query_vector = self.extractor.extract_bytes(image_bytes)
+        results = self.indexer.search(query_vector, top_k=top_k)
+
+        self._result_cache[cache_key] = results
+        if len(self._result_cache) > self._result_cache_size:
+            self._result_cache.popitem(last=False)
+        return results
 
 
 app = Flask(__name__)
@@ -190,6 +211,25 @@ def get_service() -> SearchBackendService:
             service_init_error = str(exc)
             raise
     return service
+
+
+def _to_public_image_url(image_path: str) -> str | None:
+    image_abs = (BASE_DIR / image_path).resolve()
+    try:
+        relative = image_abs.relative_to(IMAGES_DIR.resolve())
+    except ValueError:
+        return None
+    return url_for("serve_image", image_path=relative.as_posix())
+
+
+@app.get("/")
+def home() -> Any:
+    return render_template("index.html")
+
+
+@app.get("/images/<path:image_path>")
+def serve_image(image_path: str) -> Any:
+    return send_from_directory(IMAGES_DIR, image_path)
 
 
 @app.get("/health")
@@ -222,14 +262,24 @@ def search() -> Any:
         return jsonify({"error": "top_k must be a positive integer"}), 400
 
     try:
-        results = get_service().search_uploaded_image(image_file=image_file, top_k=top_k)
+        raw_results = get_service().search_uploaded_image(image_file=image_file, top_k=top_k)
     except RetrievalError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
         return jsonify({"error": f"search failed: {exc}"}), 500
 
+    results: List[Dict[str, Any]] = []
+    for item in raw_results:
+        row = dict(item)
+        image_path = row.get("image_path")
+        if isinstance(image_path, str):
+            row["image_url"] = _to_public_image_url(image_path)
+        else:
+            row["image_url"] = None
+        results.append(row)
+
     return jsonify({"top_k": top_k, "count": len(results), "results": results})
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
