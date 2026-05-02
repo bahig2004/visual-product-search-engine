@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 import hashlib
@@ -10,7 +11,7 @@ from typing import Any, Dict, List
 import numpy as np
 from flask import Flask, jsonify, render_template, request, send_from_directory, url_for
 
-from exceptions import RetrievalError
+from exceptions import IndexNotBuiltError, RetrievalError
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -84,6 +85,8 @@ class SearchBackendService:
         self.extractor = QueryFeatureExtractor()
         self._result_cache: OrderedDict[str, List[Dict[str, Any]]] = OrderedDict()
         self._result_cache_size = int(os.getenv("RESULT_CACHE_SIZE", "128"))
+        self._text_result_cache: OrderedDict[str, List[Dict[str, Any]]] = OrderedDict()
+        self._text_cache_size = int(os.getenv("TEXT_SEARCH_CACHE_SIZE", "128"))
         self._ensure_index_ready()
 
     def _ensure_index_ready(self) -> None:
@@ -195,6 +198,54 @@ class SearchBackendService:
             self._result_cache.popitem(last=False)
         return results
 
+    def search_by_keyword(self, query: str, top_k: int) -> List[Dict[str, Any]]:
+        """Match indexed images by category folder name and filename (case-insensitive)."""
+        q_raw = (query or "").strip()
+        if not q_raw:
+            raise ValueError("Query is empty.")
+        q = q_raw.lower()
+        cache_key = f"{top_k}:{q}"
+        if cache_key in self._text_result_cache:
+            self._text_result_cache.move_to_end(cache_key)
+            return self._text_result_cache[cache_key]
+
+        self.indexer._assert_ready()
+        matches: List[tuple[float, int, Dict[str, Any]]] = []
+
+        for idx, meta in enumerate(self.indexer.metadata):
+            cat = (meta.get("category") or "").strip().lower()
+            fn = (meta.get("filename") or "").strip().lower()
+            score = 0.0
+            if cat == q:
+                score = 1.0
+            elif cat and (q in cat or cat.startswith(q)):
+                score = 0.92
+            elif cat and any(part.startswith(q) for part in cat.replace("-", " ").split()):
+                score = 0.88
+            elif fn and q in fn:
+                score = 0.78
+            if score > 0.0:
+                matches.append((score, idx, meta))
+
+        matches.sort(key=lambda item: (-item[0], item[1]))
+        matches = matches[: max(1, top_k)]
+
+        results: List[Dict[str, Any]] = []
+        for rank, (score, idx, meta) in enumerate(matches, start=1):
+            row: Dict[str, Any] = {
+                "rank": rank,
+                "index": int(idx),
+                "score": float(score),
+                "metric": "keyword",
+            }
+            row.update(dict(meta))
+            results.append(row)
+
+        self._text_result_cache[cache_key] = results
+        if len(self._text_result_cache) > self._text_cache_size:
+            self._text_result_cache.popitem(last=False)
+        return results
+
 
 app = Flask(__name__)
 service: SearchBackendService | None = None
@@ -247,6 +298,54 @@ def reindex() -> Any:
     return jsonify({"message": "index rebuilt", "index": summary}), 201
 
 
+@app.post("/search_text")
+def search_text() -> Any:
+    """Keyword search: match category folder names and filenames."""
+    if request.is_json:
+        payload = request.get_json(silent=True) or {}
+        query = (payload.get("q") or payload.get("query") or "").strip()
+        top_k_raw = payload.get("top_k", 24)
+    else:
+        query = (request.form.get("q") or request.form.get("query") or "").strip()
+        top_k_raw = request.form.get("top_k", 24)
+    try:
+        top_k = int(top_k_raw)
+        if top_k <= 0 or top_k > 200:
+            raise ValueError("top_k out of range")
+    except (TypeError, ValueError):
+        return jsonify({"error": "top_k must be a positive integer (max 200)"}), 400
+    if not query:
+        return jsonify({"error": "Missing search query (q)."}), 400
+    try:
+        raw_results = get_service().search_by_keyword(query=query, top_k=top_k)
+    except IndexNotBuiltError as exc:
+        return jsonify({"error": str(exc)}), 503
+    except RetrievalError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": f"search failed: {exc}"}), 500
+
+    results: List[Dict[str, Any]] = []
+    for item in raw_results:
+        row = dict(item)
+        image_path = row.get("image_path")
+        if isinstance(image_path, str):
+            row["image_url"] = _to_public_image_url(image_path)
+        else:
+            row["image_url"] = None
+        results.append(row)
+
+    return jsonify(
+        {
+            "query": query,
+            "top_k": top_k,
+            "count": len(results),
+            "mode": "keyword",
+            "results": results,
+        }
+    )
+
+
 @app.post("/search")
 def search() -> Any:
     image_file = request.files.get("image")
@@ -278,7 +377,14 @@ def search() -> Any:
             row["image_url"] = None
         results.append(row)
 
-    return jsonify({"top_k": top_k, "count": len(results), "results": results})
+    return jsonify(
+        {
+            "mode": "visual",
+            "top_k": top_k,
+            "count": len(results),
+            "results": results,
+        }
+    )
 
 
 if __name__ == "__main__":
