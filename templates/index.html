@@ -1,16 +1,9 @@
-
-<!doctype html>
+﻿<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Product Search</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap"
-      rel="stylesheet"
-    />
+    <title>Product RAG Search</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
   </head>
   <body>
@@ -20,171 +13,58 @@
           <div class="brand">
             <span class="brand-mark" aria-hidden="true"></span>
             <div>
-              <p class="brand-kicker">Visual retrieval</p>
-              <p class="brand-name">Product Search</p>
+              <p class="brand-kicker">Text Retrieval</p>
+              <p class="brand-name">Product RAG Search</p>
             </div>
           </div>
-          <form id="textSearchForm" class="global-search" autocomplete="off">
-            <label class="visually-hidden" for="keywordInput">Search by product name or category</label>
-            <span class="search-icon" aria-hidden="true">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="11" cy="11" r="7" />
-                <path d="M20 20l-3-3" stroke-linecap="round" />
-              </svg>
-            </span>
-            <input
-              id="keywordInput"
-              name="q"
-              type="search"
-              placeholder="Search products — e.g. blouse, dress, shoes"
-            />
-            <div class="global-search-meta">
-              <label class="inline-label" for="topKText">Max</label>
-              <input id="topKText" name="top_k" type="number" value="24" min="1" max="200" />
-            </div>
-            <button id="textSearchBtn" type="submit" class="btn-primary">Search</button>
-          </form>
         </div>
       </header>
 
       <main class="layout">
-        <section class="intro">
-          <h1>Find products by keyword or by image</h1>
-          <p>
-            Type a category or filename hint in the bar above, or use visual search below to
-            match by appearance. Results use your indexed catalog (folder names map to
-            categories like <em>blouse</em> or <em>dress</em>).
-          </p>
+        <section class="hero panel">
+          <div class="hero-content">
+            <p class="hero-kicker">AI Visual Discovery</p>
+            <h1>Search products with multimodal context</h1>
+            <p>Run text search, or drag an image on the search form for client-side visual matching.</p>
+          </div>
         </section>
 
-        <div class="mode-tabs" role="tablist" aria-label="Search mode">
-          <button type="button" class="mode-tab is-active" data-mode="visual" role="tab" aria-selected="true">
-            Visual search
-          </button>
-          <button type="button" class="mode-tab" data-mode="keyword" role="tab" aria-selected="false">
-            Keyword only
-          </button>
-        </div>
-
-        <section class="panel search-panel" id="visualPanel">
-          <div class="panel-head">
-            <h2>Search with an image</h2>
-            <p class="panel-desc">Upload a product photo to find visually similar items (FAISS + ResNet50).</p>
-          </div>
-          <form id="searchForm" class="search-form">
-            <div
-              id="dropZone"
-              class="drop-zone"
-              role="button"
-              tabindex="0"
-              aria-label="Drop query image here or click to upload"
-            >
-              <input id="imageInput" name="image" type="file" accept="image/*" />
-              <p class="drop-title">Drop image here</p>
-              <p class="drop-subtitle">or click to browse</p>
+        <section class="panel">
+          <form id="textSearchForm" class="global-search" autocomplete="off">
+            <label class="visually-hidden" for="keywordInput">Search by text</label>
+            <input id="keywordInput" name="q" type="search" placeholder="e.g. red blouse for summer" />
+            <div class="global-search-meta">
+              <label class="inline-label" for="topKText">Max</label>
+              <input id="topKText" name="top_k" type="number" value="10" min="1" max="200" />
             </div>
-
-            <div class="controls-row">
-              <label for="topKInput">Top K</label>
-              <input id="topKInput" name="top_k" type="number" value="5" min="1" max="30" />
-              <button id="searchBtn" type="submit" class="btn-primary">Find similar</button>
-            </div>
+            <button id="textSearchBtn" type="submit" class="btn-primary">Search</button>
           </form>
-
-          <div id="queryPreviewBox" class="query-preview hidden">
-            <img id="queryPreviewImage" alt="Query preview" width="64" height="64" />
-            <div>
-              <p class="preview-title">Query image</p>
-              <p id="queryFileName" class="preview-name"></p>
-            </div>
+          <p id="dropHint" class="drop-hint">Tip: Drag and drop an image on the search bar to find visually similar products.</p>
+          <div class="query-examples">
+            <button type="button" class="example-chip" data-query="retrieve relevant red dress images">retrieve relevant red dress images</button>
+            <button type="button" class="example-chip" data-query="show me black shoes">show me black shoes</button>
+            <button type="button" class="example-chip" data-query="find relevant blouse products">find relevant blouse products</button>
           </div>
+          <p id="statusText" class="status" role="status"></p>
+          <div id="generatedAnswer" class="answer-box hidden"></div>
         </section>
-
-        <p id="statusText" class="status" role="status"></p>
 
         <section class="panel results-section">
           <div class="results-header">
-            <h2>Results</h2>
+            <h2>Retrieved Context</h2>
             <span id="resultsMeta" class="results-meta"></span>
           </div>
           <div id="emptyState" class="empty-state">
-            <p>Search results will appear here.</p>
+            <p>Results will appear here.</p>
+            <span>Run a text search or drop an image to start.</span>
           </div>
           <div id="resultsGrid" class="grid hidden" aria-live="polite"></div>
         </section>
       </main>
-
-      <footer class="site-footer">
-        <span>Visual product search engine</span>
-        <span class="footer-dot">·</span>
-        <span>Keyword mode matches category folders and file names in your index.</span>
-      </footer>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/mobilenet@2.1.1/dist/mobilenet.min.js"></script>
     <script src="{{ url_for('static', filename='app.js') }}"></script>
   </body>
 </html>
-
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Visual Product Search</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
-  </head>
-  <body>
-    <main class="layout">
-      <header class="hero">
-        <div class="brand-badge">AI Visual Retrieval</div>
-        <h1>Visual Product Search Engine</h1>
-        <p class="subtitle">
-          Drag and drop a product image, or browse from your device, to find visually
-          similar items instantly.
-        </p>
-      </header>
-
-      <section class="panel search-panel">
-        <form id="searchForm" class="search-form">
-          <div
-            id="dropZone"
-            class="drop-zone"
-            role="button"
-            tabindex="0"
-            aria-label="Drop query image here or click to upload"
-          >
-            <input id="imageInput" name="image" type="file" accept="image/*" required />
-            <p class="drop-title">Drop image here</p>
-            <p class="drop-subtitle">or click to browse</p>
-          </div>
-
-          <div class="controls-row">
-            <label for="topKInput">Top K</label>
-            <input id="topKInput" name="top_k" type="number" value="5" min="1" max="30" />
-            <button id="searchBtn" type="submit">Search Similar Products</button>
-          </div>
-        </form>
-
-        <div id="queryPreviewBox" class="query-preview hidden">
-          <img id="queryPreviewImage" alt="Query preview" />
-          <div>
-            <p class="preview-title">Selected query image</p>
-            <p id="queryFileName" class="preview-name"></p>
-          </div>
-        </div>
-        <p id="statusText" class="status"></p>
-      </section>
-
-      <section class="panel">
-        <div class="results-header">
-          <h2>Results</h2>
-          <span id="resultsMeta" class="results-meta"></span>
-        </div>
-        <div id="resultsGrid" class="grid"></div>
-      </section>
-    </main>
-
-    <script src="{{ url_for('static', filename='app.js') }}"></script>
-  </body>
-</html>
-

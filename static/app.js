@@ -1,34 +1,24 @@
-
-const form = document.getElementById("searchForm");
-const textSearchForm = document.getElementById("textSearchForm");
+﻿const textSearchForm = document.getElementById("textSearchForm");
 const resultsGrid = document.getElementById("resultsGrid");
 const emptyState = document.getElementById("emptyState");
 const statusText = document.getElementById("statusText");
-const dropZone = document.getElementById("dropZone");
-const imageInput = document.getElementById("imageInput");
-const searchBtn = document.getElementById("searchBtn");
 const textSearchBtn = document.getElementById("textSearchBtn");
 const keywordInput = document.getElementById("keywordInput");
 const topKText = document.getElementById("topKText");
 const resultsMeta = document.getElementById("resultsMeta");
-const queryPreviewBox = document.getElementById("queryPreviewBox");
-const queryPreviewImage = document.getElementById("queryPreviewImage");
-const queryFileName = document.getElementById("queryFileName");
-const visualPanel = document.getElementById("visualPanel");
-const modeTabs = document.querySelectorAll(".mode-tab");
+const generatedAnswer = document.getElementById("generatedAnswer");
+const exampleChips = document.querySelectorAll(".example-chip");
+const dropHint = document.getElementById("dropHint");
+
+let catalogFeatureCache = null;
 
 function setStatus(text) {
   statusText.textContent = text;
 }
 
-function setLoadingVisual(isLoading) {
-  searchBtn.disabled = isLoading;
-  searchBtn.textContent = isLoading ? "Searching…" : "Find similar";
-}
-
 function setLoadingText(isLoading) {
   textSearchBtn.disabled = isLoading;
-  textSearchBtn.textContent = isLoading ? "Searching…" : "Search";
+  textSearchBtn.textContent = isLoading ? "Searching..." : "Search";
 }
 
 function showResultsGrid(show) {
@@ -41,69 +31,46 @@ function showResultsGrid(show) {
   }
 }
 
-function updatePreview(file) {
-  if (!file) {
-    queryPreviewBox.classList.add("hidden");
-    queryPreviewImage.removeAttribute("src");
-    queryFileName.textContent = "";
-    return;
-  }
-  const objectUrl = URL.createObjectURL(file);
-  queryPreviewImage.src = objectUrl;
-  queryFileName.textContent = file.name;
-  queryPreviewBox.classList.remove("hidden");
+function resetResultsState() {
+  resultsGrid.innerHTML = "";
+  resultsMeta.textContent = "";
+  generatedAnswer.textContent = "";
+  generatedAnswer.classList.add("hidden");
 }
 
-function setFileOnInput(file) {
-  const dataTransfer = new DataTransfer();
-  dataTransfer.items.add(file);
-  imageInput.files = dataTransfer.files;
-  updatePreview(file);
+function toPositiveTopK() {
+  let topK = parseInt(topKText.value, 10);
+  if (Number.isNaN(topK) || topK < 1) topK = 10;
+  return topK;
 }
 
 function renderResults(payload) {
   resultsGrid.innerHTML = "";
-  resultsMeta.textContent = "";
-  const results = payload.results || [];
-  const mode = payload.mode || "visual";
-  const metricHint =
-    mode === "keyword"
-      ? "keyword match"
-      : payload.results?.[0]?.metric === "cosine"
-        ? "cosine"
-        : "similarity";
+  resultsMeta.textContent = `mode: ${payload.mode || "rag"} | top_k: ${payload.top_k || 0} | count: ${payload.count || 0}`;
 
+  generatedAnswer.textContent = payload.answer || "";
+  generatedAnswer.classList.toggle("hidden", !payload.answer);
+
+  const results = payload.results || [];
   if (!results.length) {
-    setStatus("No results found. Try another keyword or image.");
+    setStatus("No matching context found.");
     showResultsGrid(false);
     return;
   }
 
   setStatus(`Showing ${results.length} result(s).`);
-  const parts = [
-    mode === "keyword" ? `Keyword: “${payload.query || ""}”` : "Visual match",
-    `max ${payload.top_k}`,
-    `${payload.count} returned`,
-    metricHint,
-  ];
-  resultsMeta.textContent = parts.filter(Boolean).join(" · ");
-
   for (const item of results) {
     const card = document.createElement("article");
     card.className = "card";
-    const scoreLabel =
-      mode === "keyword"
-        ? `match ${Number(item.score).toFixed(2)}`
-        : `score ${Number(item.score).toFixed(4)}`;
     const image = item.image_url
       ? `<img src="${item.image_url}" alt="" loading="lazy" decoding="async" />`
       : `<div class="card-placeholder">No preview</div>`;
     card.innerHTML = `
       ${image}
       <div class="card-body">
-        <p class="card-title">#${item.rank} · ${scoreLabel}</p>
-        <div class="muted">${item.category || "—"}</div>
-        <div class="card-filename">${item.filename || item.image_id || ""}</div>
+        <p class="card-title">#${item.rank} | score ${Number(item.score).toFixed(4)}</p>
+        <div class="muted">${item.category || "unknown category"}</div>
+        <div class="muted">${item.filename || ""}</div>
       </div>
     `;
     resultsGrid.appendChild(card);
@@ -111,76 +78,160 @@ function renderResults(payload) {
   showResultsGrid(true);
 }
 
-function isValidImage(file) {
-  return Boolean(file && file.type && file.type.startsWith("image/"));
+function cosineSimilarity(a, b) {
+  if (a.length !== b.length) return 0;
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  if (!normA || !normB) return 0;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
-["dragenter", "dragover"].forEach((eventName) => {
-  dropZone.addEventListener(eventName, (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    dropZone.classList.add("dragover");
+function buildImageFeatureVector(image) {
+  const size = 24;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) {
+    throw new Error("Canvas context is unavailable.");
+  }
+  ctx.drawImage(image, 0, 0, size, size);
+  const data = ctx.getImageData(0, 0, size, size).data;
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  let r2 = 0;
+  let g2 = 0;
+  let b2 = 0;
+  const totalPixels = size * size;
+  for (let idx = 0; idx < data.length; idx += 4) {
+    const rv = data[idx];
+    const gv = data[idx + 1];
+    const bv = data[idx + 2];
+    r += rv;
+    g += gv;
+    b += bv;
+    r2 += rv * rv;
+    g2 += gv * gv;
+    b2 += bv * bv;
+  }
+  const meanR = r / totalPixels;
+  const meanG = g / totalPixels;
+  const meanB = b / totalPixels;
+  const stdR = Math.sqrt(Math.max(0, r2 / totalPixels - meanR * meanR));
+  const stdG = Math.sqrt(Math.max(0, g2 / totalPixels - meanG * meanG));
+  const stdB = Math.sqrt(Math.max(0, b2 / totalPixels - meanB * meanB));
+  return [meanR, meanG, meanB, stdR, stdG, stdB];
+}
+
+async function loadImageFromSource(source) {
+  return await new Promise((resolve, reject) => {
+    const image = new Image();
+    if (typeof source === "string") {
+      image.crossOrigin = "anonymous";
+      image.src = source;
+    } else {
+      image.src = URL.createObjectURL(source);
+    }
+    image.onload = () => {
+      resolve(image);
+      if (typeof source !== "string") {
+        URL.revokeObjectURL(image.src);
+      }
+    };
+    image.onerror = () => reject(new Error("Unable to read image data."));
   });
-});
+}
 
-["dragleave", "drop"].forEach((eventName) => {
-  dropZone.addEventListener(eventName, (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    dropZone.classList.remove("dragover");
-  });
-});
+async function ensureCatalogFeatures() {
+  if (catalogFeatureCache) return catalogFeatureCache;
 
-dropZone.addEventListener("drop", (event) => {
-  const file = event.dataTransfer?.files?.[0];
-  if (!isValidImage(file)) {
-    setStatus("Please drop a valid image file.");
-    return;
+  const response = await fetch("/catalog-images", { headers: { Accept: "application/json" } });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.error || "Unable to load catalog images.");
   }
-  setFileOnInput(file);
-  setStatus("Image ready. Run visual search.");
-});
 
-dropZone.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" || event.key === " ") {
-    event.preventDefault();
-    imageInput.click();
+  const features = [];
+  for (const item of payload.items || []) {
+    try {
+      const image = await loadImageFromSource(item.image_url);
+      const vector = buildImageFeatureVector(image);
+      features.push({ ...item, vector });
+    } catch (_error) {
+      // Skip images that cannot be read in browser.
+    }
   }
-});
+  catalogFeatureCache = features;
+  return features;
+}
 
-imageInput.addEventListener("change", () => {
-  const file = imageInput.files?.[0];
-  if (!file) {
-    updatePreview(null);
-    return;
+async function runImageSearch(file) {
+  const topK = toPositiveTopK();
+  setLoadingText(true);
+  setStatus("Searching by dropped image...");
+  resetResultsState();
+
+  try {
+    if (!file || !file.type.startsWith("image/")) {
+      throw new Error("Drop a valid image file.");
+    }
+
+    const uploadedImage = await loadImageFromSource(file);
+    const uploadedVector = buildImageFeatureVector(uploadedImage);
+    const catalog = await ensureCatalogFeatures();
+
+    const ranked = catalog
+      .map((item) => ({ ...item, score: cosineSimilarity(uploadedVector, item.vector) }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topK);
+
+    renderResults({
+      mode: "image",
+      top_k: topK,
+      count: ranked.length,
+      answer: ranked.length
+        ? "Results ranked by visual similarity from dropped image."
+        : "No matching products found for this image.",
+      results: ranked.map((item, index) => ({
+        rank: index + 1,
+        score: item.score,
+        category: item.category,
+        filename: item.filename,
+        image_path: item.image_path,
+        image_url: item.image_url,
+      })),
+    });
+  } catch (error) {
+    setStatus(error.message || "Image search failed.");
+    showResultsGrid(false);
+  } finally {
+    setLoadingText(false);
   }
-  if (!isValidImage(file)) {
-    setStatus("Please choose a valid image file.");
-    imageInput.value = "";
-    updatePreview(null);
-    return;
-  }
-  updatePreview(file);
-  setStatus("Image ready. Run visual search.");
-});
+}
 
 textSearchForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const q = (keywordInput.value || "").trim();
   if (!q) {
-    setStatus("Enter a search term (e.g. blouse).");
+    setStatus("Enter a search query.");
     keywordInput.focus();
     return;
   }
-  let topK = parseInt(topKText.value, 10);
-  if (Number.isNaN(topK) || topK < 1) topK = 24;
+  const topK = toPositiveTopK();
+
   setLoadingText(true);
-  setStatus("Searching catalog…");
-  resultsGrid.innerHTML = "";
-  resultsMeta.textContent = "";
+  setStatus("Searching catalog...");
+  resetResultsState();
 
   try {
-    const response = await fetch("/search_text", {
+    const response = await fetch("/search", {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify({ q, top_k: topK }),
@@ -198,205 +249,38 @@ textSearchForm.addEventListener("submit", async (event) => {
   }
 });
 
-form.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const file = imageInput.files?.[0];
-  if (!file) {
-    setStatus("Choose or drop an image first.");
-    return;
-  }
-
-  const formData = new FormData(form);
-  setLoadingVisual(true);
-  setStatus("Finding visually similar products…");
-  resultsGrid.innerHTML = "";
-  resultsMeta.textContent = "";
-
-  try {
-    const response = await fetch("/search", {
-      method: "POST",
-      body: formData,
-    });
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(payload.error || "Search failed.");
-    }
-    renderResults(payload);
-  } catch (error) {
-    setStatus(error.message || "Search failed.");
-    showResultsGrid(false);
-  } finally {
-    setLoadingVisual(false);
-  }
-});
-
-modeTabs.forEach((tab) => {
-  tab.addEventListener("click", () => {
-    const mode = tab.dataset.mode;
-    modeTabs.forEach((t) => {
-      const active = t.dataset.mode === mode;
-      t.classList.toggle("is-active", active);
-      t.setAttribute("aria-selected", active ? "true" : "false");
-    });
-    if (mode === "keyword") {
-      visualPanel.classList.add("hidden");
-      keywordInput.focus();
-    } else {
-      visualPanel.classList.remove("hidden");
-    }
-  });
-});
-
-const form = document.getElementById("searchForm");
-const resultsGrid = document.getElementById("resultsGrid");
-const statusText = document.getElementById("statusText");
-const dropZone = document.getElementById("dropZone");
-const imageInput = document.getElementById("imageInput");
-const searchBtn = document.getElementById("searchBtn");
-const resultsMeta = document.getElementById("resultsMeta");
-const queryPreviewBox = document.getElementById("queryPreviewBox");
-const queryPreviewImage = document.getElementById("queryPreviewImage");
-const queryFileName = document.getElementById("queryFileName");
-
-function setStatus(text) {
-  statusText.textContent = text;
-}
-
-function setLoadingState(isLoading) {
-  searchBtn.disabled = isLoading;
-  searchBtn.textContent = isLoading ? "Searching..." : "Search Similar Products";
-}
-
-function updatePreview(file) {
-  if (!file) {
-    queryPreviewBox.classList.add("hidden");
-    queryPreviewImage.removeAttribute("src");
-    queryFileName.textContent = "";
-    return;
-  }
-  const objectUrl = URL.createObjectURL(file);
-  queryPreviewImage.src = objectUrl;
-  queryFileName.textContent = file.name;
-  queryPreviewBox.classList.remove("hidden");
-}
-
-function setFileOnInput(file) {
-  const dataTransfer = new DataTransfer();
-  dataTransfer.items.add(file);
-  imageInput.files = dataTransfer.files;
-  updatePreview(file);
-}
-
-function renderResults(payload) {
-  resultsGrid.innerHTML = "";
-  resultsMeta.textContent = "";
-  const results = payload.results || [];
-  if (!results.length) {
-    setStatus("No results found.");
-    return;
-  }
-
-  setStatus(`Retrieved ${results.length} result(s).`);
-  resultsMeta.textContent = `Top K: ${payload.top_k} | Count: ${payload.count}`;
-  for (const item of results) {
-    const card = document.createElement("article");
-    card.className = "card";
-    const image = item.image_url
-      ? `<img src="${item.image_url}" alt="Result ${item.rank}" />`
-      : `<img alt="No preview available" />`;
-    card.innerHTML = `
-      ${image}
-      <div class="card-body">
-        <p class="card-title">#${item.rank} | score ${Number(item.score).toFixed(4)}</p>
-        <div class="muted">category: ${item.category || "N/A"}</div>
-        <div>${item.filename || item.image_id || "unknown"}</div>
-      </div>
-    `;
-    resultsGrid.appendChild(card);
-  }
-}
-
-function isValidImage(file) {
-  return Boolean(file && file.type && file.type.startsWith("image/"));
-}
-
 ["dragenter", "dragover"].forEach((eventName) => {
-  dropZone.addEventListener(eventName, (event) => {
+  textSearchForm.addEventListener(eventName, (event) => {
     event.preventDefault();
-    event.stopPropagation();
-    dropZone.classList.add("dragover");
-  });
-});
-
-["dragleave", "drop"].forEach((eventName) => {
-  dropZone.addEventListener(eventName, (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    dropZone.classList.remove("dragover");
-  });
-});
-
-dropZone.addEventListener("drop", (event) => {
-  const file = event.dataTransfer?.files?.[0];
-  if (!isValidImage(file)) {
-    setStatus("Please drop a valid image file.");
-    return;
-  }
-  setFileOnInput(file);
-  setStatus("Image ready. Click search.");
-});
-
-dropZone.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" || event.key === " ") {
-    event.preventDefault();
-    imageInput.click();
-  }
-});
-
-imageInput.addEventListener("change", () => {
-  const file = imageInput.files?.[0];
-  if (!file) {
-    updatePreview(null);
-    return;
-  }
-  if (!isValidImage(file)) {
-    setStatus("Please choose a valid image file.");
-    imageInput.value = "";
-    updatePreview(null);
-    return;
-  }
-  updatePreview(file);
-  setStatus("Image ready. Click search.");
-});
-
-form.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const file = imageInput.files?.[0];
-  if (!file) {
-    setStatus("Please choose or drop an image first.");
-    return;
-  }
-
-  const formData = new FormData(form);
-  setLoadingState(true);
-  setStatus("Searching for visually similar products...");
-  resultsGrid.innerHTML = "";
-  resultsMeta.textContent = "";
-
-  try {
-    const response = await fetch("/search", {
-      method: "POST",
-      body: formData,
-    });
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(payload.error || "Search failed.");
+    textSearchForm.classList.add("drop-active");
+    if (dropHint) {
+      dropHint.textContent = "Release image to search by picture.";
     }
-    renderResults(payload);
-  } catch (error) {
-    setStatus(error.message);
-  } finally {
-    setLoadingState(false);
-  }
+  });
 });
 
+["dragleave", "dragend"].forEach((eventName) => {
+  textSearchForm.addEventListener(eventName, () => {
+    textSearchForm.classList.remove("drop-active");
+    if (dropHint) {
+      dropHint.textContent = "Tip: Drag and drop an image on the search bar to find visually similar products.";
+    }
+  });
+});
+
+textSearchForm.addEventListener("drop", async (event) => {
+  event.preventDefault();
+  textSearchForm.classList.remove("drop-active");
+  if (dropHint) {
+    dropHint.textContent = "Tip: Drag and drop an image on the search bar to find visually similar products.";
+  }
+  const file = event.dataTransfer && event.dataTransfer.files ? event.dataTransfer.files[0] : null;
+  await runImageSearch(file);
+});
+
+exampleChips.forEach((chip) => {
+  chip.addEventListener("click", () => {
+    keywordInput.value = chip.dataset.query || "";
+    keywordInput.focus();
+  });
+});
