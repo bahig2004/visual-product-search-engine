@@ -1,0 +1,10 @@
+processed/images/
+raw/
+__pycache__/
+*.pyc
+Lib/
+Scripts/
+.venv/
+venv/
+env/
+*.exe

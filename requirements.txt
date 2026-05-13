@@ -1,0 +1,6 @@
+flask
+pillow
+numpy
+rapidfuzz
+sentence-transformers
+faiss-cpu
